@@ -1,102 +1,102 @@
-#!/home/kiruba/softwares/miniconda3/bin/python
-
 import os
 import glob
 import pandas as pd
 import argparse
 
-ap = argparse.ArgumentParser()
-ap.add_argument("-f", "--folder", required=True, help="Enter into the folder")
-ap.add_argument("-omega", "--omega_path", required=True,
-                help="Enter the OMEGA path")
-ap.add_argument("-rocs", "--rocs_path", required=True,
-                help="Enter the ROCS path")
-ap.add_argument("-temp_lig", "--template_ligand_path", required=True,
-                help="Enter the template ligand PDB path")
-args = vars(ap.parse_args())
 
+def args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-f", "--folder", required=True,
+                    help="Enter into the folder")
+    parser.add_argument("-omega", "--omega_path", required=True,
+                    help="Enter the OMEGA path")
+    parser.add_argument("-rocs", "--rocs_path", required=True,
+                    help="Enter the ROCS path")
+    parser.add_argument("-temp_lig", "--template_ligand_path", required=True,
+                    help="Enter the template ligand PDB path")
+    parser.add_argument("-mol2params", required=True,
+                    help="Enter the template ligand PDB path")    
+    return parser.parse_args()
 
-OMEGA = args["omega_path"]
-ROCS = args["rocs_path"]
-template_lig_library = glob.glob(f"{args['template_ligand_path']}/*.pdb")
-mol2params = "/Users/kiruba/miniconda3/bin/python /Users/kiruba/Rosetta/main/source/scripts/python/public/generic_potential/mol2genparams.py"
-
-# Conformer generation using OMEGA openeye (added new flag for resolving the missing MMFF parameters in ligand using -strictatomtyping false)
 
 
 def conf_gen(smi, maxconfs=2000):
 
     smi_prefix = os.path.splitext(os.path.basename(smi))[0]
-    print('{0} -in {1}/{2} -out {1}/OMEGA/{3}_omega.sdf -prefix {1}/OMEGA/{3}_omega -warts true -maxconfs {4} -strict false'.format(
-        OMEGA, os.getcwd(), smi, smi_prefix, maxconfs))
-    os.system('{0} -in {1}/{2} -out {1}/OMEGA/{3}_omega.sdf -prefix {1}/OMEGA/{3}_omega -warts true -maxconfs {4} -strict false'.format(
-        OMEGA, os.getcwd(), smi, smi_prefix, maxconfs))
+
+    cmd = f'{OMEGA} -in {smi} -out OMEGA/{smi_prefix}_omega.sdf \
+                -prefix OMEGA/{smi_prefix}_omega -warts true \
+                -maxconfs {maxconfs} -strict false'
+
+    os.system(cmd)
+
 
 # ligand alignment using ROCS openeye
-
 
 def lig_alignment(conformer, template_database, rocs_maxconfs_output=100):
 
     sdf_prefix = os.path.basename(os.path.splitext(conformer)[0]).split('_')[0]
+    
     for template in template_database:
         template_id = "_".join(os.path.basename(template).split("_")[0:3])
-        # print('{0} -dbase {1}/{2} -query {3} -prefix {4}_{5}_rocs -oformat sdf -maxconfs 30 -outputquery false -qconflabel title -outputdir {1}/ROCS/'.format(ROCS, os.getcwd(),conformer, template, sdf_prefix, template_id))
-        os.system('{0} -dbase {1}/{2} -query {3} -prefix {4}_{5}_rocs -oformat sdf -maxconfs 30 -outputquery false -qconflabel title -outputdir {1}/ROCS/'.format(
-            ROCS, os.getcwd(), conformer, template, sdf_prefix, template_id))
+
+        cmd = f'{ROCS} -dbase {conformer} -query {template} \
+               -prefix {sdf_prefix}_{template_id}_rocs -oformat mol2 \
+               -maxconfs {rocs_maxconfs_output} -outputquery false \
+               -qconflabel title -outputdir ROCS/'
+
+        os.system(cmd)
+
+
 
 # Combine each report file into single file
 
 
 def combine_report_files(report_file):
 
-    dataframeList = []
-    for report in report_file:
-        target_template_file_name = os.path.basename(
-            report).replace("_1.rpt", "")
-        read_rpt = pd.read_csv(report, sep='\t', dtype=str)
-        read_rpt = read_rpt.loc[:, ~read_rpt.columns.str.match('Unnamed')]
-        shapequery_changed_table = read_rpt.replace(
-            'untitled-query-1', target_template_file_name)
-        shapequery_changed_table.to_csv(report, sep='\t', index=None)
-        dataframeList.append(shapequery_changed_table)
-    single_rpt_csv_file = pd.concat(dataframeList, axis=0)
-    tanimoto_sorted_table = single_rpt_csv_file.sort_values(
-        by=['TanimotoCombo'], ascending=False)
-    tanimoto_sorted_table.to_csv(
-        'ROCS/single_report_file_sorted.csv', index=False)
-    top_100_hit_table = tanimoto_sorted_table.iloc[:100, :]
-    top_100_conf_temp_names = top_100_hit_table['Name'].astype(
-        str) + '_' + top_100_hit_table['ShapeQuery'].astype(str)
-    top_100_conf_temp_names.to_csv('ROCS/top_100.txt', sep='\t', index=False)
+    data = []
+
+    for rpt in report_file:
+        target_template_name = os.path.basename(rpt).replace("_1.rpt", "")
+
+        rpt = pd.read_csv(rpt, sep='\t')
+        rpt = rpt.loc[:, ~rpt.columns.str.match('Unnamed')]
+
+        rpt["ShapeQuery"] = target_template_name
+        
+        data.append(rpt)
+    
+    data = pd.concat(data)
+    data = data.sort_values(by=['TanimotoCombo'], ascending=False)
+    data["Rank"] = range(1, data.shape[0]+1)
+
+    data.to_csv('ROCS/single_report_file_sorted.csv', index=False)
+    
+    data_100 = data.iloc[:100, :][["Name", "ShapeQuery"]]
+    data_100.to_csv("ROCS/top_100.txt", index=False)
+    
 
 # Seperate the top 100 conformer hits from ROCS alignment sdf files
 
 
 def sep_hits_from_rocs_sdf_file(top_100_hits_txt_path):
 
-    with open(top_100_hits_txt_path) as open_file:
-        dict_sdf_file_name = {}
-        for line in open_file:
-            if len(line.split('_')) == 8:
-                conf_name = "_".join(line.strip().split('_')[0:3])
-                temp_name = "_".join(line.strip().split('_')[3:])
-                if conf_name not in dict_sdf_file_name:
-                    dict_sdf_file_name[conf_name] = [temp_name]
-                else:
-                    dict_sdf_file_name[conf_name].append(temp_name)
-            elif len(line.split('_')) == 7:
-                conf_name = "_".join(line.strip().split('_')[0:2])
-                temp_name = "_".join(line.strip().split('_')[2:])
-                if conf_name not in dict_sdf_file_name:
-                    dict_sdf_file_name[conf_name] = [temp_name]
-                else:
-                    dict_sdf_file_name[conf_name].append(temp_name)
-        for key, list_value in dict_sdf_file_name.items():
-            for single_value in list_value:
-                print(
-                    'sed -n /{0}$/,/\$\$\$\$/p ROCS/{1}_hits_1.sdf > top_100_conf/{0}_{1}_hits.sdf'.format(key, single_value))
-                os.system(
-                    'sed -n /{0}$/,/\$\$\$\$/p ROCS/{1}_hits_1.sdf > top_100_conf/{0}_{1}_hits.sdf'.format(key, single_value))
+    def extract_mol2_conf(file, conf_labels):
+        with open(f"ROCS/{file}_hits_1.mol2", "r") as f:
+            f = f.read().split("@<TRIPOS>MOLECULE\n")
+            f = {v.split("\n")[0]:"@<TRIPOS>MOLECULE\n" + v for v in f}
+            
+            for label in conf_labels:
+                with open(f"top_100_conf/{label}_{file}_hits.mol2", "w") as fwr:
+                    fwr.write(f[label])
+                    fwr.close()
+
+    data = pd.read_csv(top_100_hits_txt_path)
+    data = data.groupby("ShapeQuery")["Name"].apply(list).to_dict()
+
+    for template, conformers in data.items():
+        extract_mol2_conf(template, conformers)
+
 
 # Convert SDF file to PDB/PARAMS for Rosetta input
 
@@ -104,35 +104,39 @@ def sep_hits_from_rocs_sdf_file(top_100_hits_txt_path):
 def sdftomol2(mol2params, top_hits_sdf_path):
 
     for file in top_hits_sdf_path:
-        out_put_file_name = os.path.splitext(os.path.basename(file))[0]
-        print('/Users/kiruba/miniconda3/bin/python /Users/kiruba/Desktop/rosetta_kinase_cm/convert.py {0} {1}/top_100_conf/{2}.mol2'.format(
-            file, os.getcwd(), out_put_file_name))
-        os.system('/Users/kiruba/miniconda3/bin/python /Users/kiruba/Desktop/rosetta_kinase_cm/convert.py {0} {1}/top_100_conf/{2}.mol2'.format(
-            file, os.getcwd(), out_put_file_name))
 
-        print('{0} -s {1}.mol2 --prefix=mol2params/{2}'.format(mol2params,
-                                                               file.split(".")[0], out_put_file_name))
-        os.system('{0} -s {1}.mol2 --prefix=mol2params/{2}'.format(mol2params,
-                                                                   file.split(".")[0], out_put_file_name))
+        prefix = file.split("/")[-1].split(".")[0]
+        cmd = f'python {mol2params} -s {file} --prefix=mol2params/{prefix}'
+
+        os.system(cmd)
 
 
-currentWD = os.getcwd()
-os.chdir(args['folder'])
 
-os.mkdir("OMEGA")
-conf_gen(glob.glob("*.smi")[0], maxconfs=1000)
+if __name__ == "__main__":
 
-os.mkdir("ROCS")
-lig_alignment(glob.glob("OMEGA/*.sdf")
-              [0], template_lig_library, rocs_maxconfs_output=30)
+    args = args()
 
-combine_report_files(glob.glob("ROCS/*.rpt"))
+    OMEGA = args.omega_path
+    ROCS = args.rocs_path
+    MOL2PARAMS = args.mol2params
 
-os.mkdir("top_100_conf")
-sep_hits_from_rocs_sdf_file("ROCS/top_100.txt")
+    template_lig_library = args.template_ligand_path
+    template_lig_library = glob.glob(f"{template_lig_library}/*.pdb")
 
-os.mkdir("mol2params")
-sdftomol2(mol2params, glob.glob("top_100_conf/*.sdf"))
-os.system("mv *hits_0001.pdb mol2params")
-os.system("mv *hits.params mol2params")
-os.chdir(currentWD)
+    os.chdir(args.folder)
+
+    os.mkdir("OMEGA")
+    os.mkdir("ROCS")
+    os.mkdir("top_100_conf")
+    os.mkdir("mol2params")
+
+    smiles = glob.glob("*.smi")[0]
+    conf_gen(smiles, maxconfs=1000)
+
+    sdf = glob.glob("OMEGA/*.sdf")[0]
+    lig_alignment(sdf, template_lig_library, rocs_maxconfs_output=30)
+
+    combine_report_files(glob.glob("ROCS/*.rpt"))
+    sep_hits_from_rocs_sdf_file("ROCS/top_100.txt")
+
+    sdftomol2(MOL2PARAMS, glob.glob("top_100_conf/*.mol2"))
